@@ -9,6 +9,7 @@ from ..runtime.autotuner import OutOfResources
 from ..runtime.cache import get_cache_manager, get_dump_manager, get_override_manager
 from ..runtime.driver import driver
 from ..tools.disasm import get_sass
+from ._logging import maybe_trace_triton
 # TODO: this shouldn't be here
 from .code_generator import ast_to_ttir
 from pathlib import Path
@@ -253,6 +254,7 @@ def compile(src, target=None, options=None):
     always_compile = knobs.compilation.always_compile
     if not always_compile and metadata_path is not None:
         # cache hit!
+        maybe_trace_triton(metadata_path, metadata_group, src, ir_source)
         return CompiledKernel(src, metadata_group, hash)
     # initialize metadata
     metadata = {
@@ -321,6 +323,7 @@ def compile(src, target=None, options=None):
     # multithreading in the MLIR context
     if not knobs.compilation.enable_asan:
         context.disable_multithreading()
+    maybe_trace_triton(metadata_group[metadata_filename], metadata_group, src, ir_source)
     # return handle to compiled kernel
     return CompiledKernel(src, metadata_group, hash)
 
