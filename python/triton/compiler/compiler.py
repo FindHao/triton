@@ -17,6 +17,9 @@ import re
 import functools
 import os
 import sysconfig
+from torch._logging import trace_structured
+from collections import defaultdict
+import json
 
 # - ^\s*tt\.func\s+ : match the start of the string, any leading whitespace, the keyword func,
 #    and any following whitespace
@@ -281,6 +284,8 @@ def compile(src, target=None, options=None):
         filter_traceback(e)
         raise
     use_ir_loc = os.environ.get("USE_IR_LOC", None)
+    torch_trace_enabled = os.environ.get("TORCH_TRACE") is not None
+    torch_trace_data = defaultdict(dict)
     for ext, compile_ir in list(stages.items())[first_stage:]:
         next_module = compile_ir(module, metadata)
         ir_filename = f"{file_name}.{ext}"
@@ -291,13 +296,24 @@ def compile(src, target=None, options=None):
         if (not store_only_binary) or (ext in ("cubin", "hsaco", "json")):
             metadata_group[ir_filename] = fn_cache_manager.put(next_module, ir_filename)
         if fn_dump_manager is not None:
-            fn_dump_manager.put(next_module, ir_filename)
+            output_path = fn_dump_manager.put(next_module, ir_filename)
+            if torch_trace_enabled:
+                torch_trace_data["file_path"][ir_filename] = output_path
+            if not isinstance(next_module, bytes):
+                if not isinstance(next_module, bytes):
+                    with open(output_path, 'r') as f:
+                        torch_trace_data["file_content"][ir_filename] = f.read()
         # use an env variable to parse ir from file
         if use_ir_loc == ext:
             ir_full_name = fn_cache_manager.get_file(ir_filename)
             next_module.create_location_snapshot(ir_full_name)
             print(f"Creating new locations for {ir_full_name}")
         module = next_module
+    if torch_trace_data:
+        trace_structured(
+            "@findhao triton.kernel",
+            payload_fn=lambda: json.dumps(torch_trace_data),
+        )
     # write-back metadata
     metadata_group[metadata_filename] = fn_cache_manager.put(json.dumps(metadata, default=vars), metadata_filename,
                                                              binary=False)
