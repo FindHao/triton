@@ -17,7 +17,7 @@ import re
 import functools
 import os
 import sysconfig
-from torch._logging import trace_structured
+from torch._logging._internal import trace_structured_triton
 from collections import defaultdict
 import json
 
@@ -299,10 +299,10 @@ def compile(src, target=None, options=None):
             output_path = fn_dump_manager.put(next_module, ir_filename)
             if torch_trace_enabled:
                 torch_trace_data["file_path"][ir_filename] = output_path
-            if not isinstance(next_module, bytes):
-                if not isinstance(next_module, bytes):
-                    with open(output_path, 'r') as f:
-                        torch_trace_data["file_content"][ir_filename] = f.read()
+            # if not isinstance(next_module, bytes):
+            #     if not isinstance(next_module, bytes):
+            #         with open(output_path, 'r') as f:
+            #             torch_trace_data["file_content"][ir_filename] = f.read()
         # use an env variable to parse ir from file
         if use_ir_loc == ext:
             ir_full_name = fn_cache_manager.get_file(ir_filename)
@@ -310,7 +310,7 @@ def compile(src, target=None, options=None):
             print(f"Creating new locations for {ir_full_name}")
         module = next_module
     if torch_trace_data:
-        trace_structured(
+        trace_structured_triton(
             "@findhao triton.kernel",
             payload_fn=lambda: json.dumps(torch_trace_data),
         )
