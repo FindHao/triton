@@ -17,7 +17,6 @@ import re
 import functools
 import os
 import sysconfig
-from torch._logging._internal import trace_structured_triton
 from collections import defaultdict
 import json
 
@@ -257,6 +256,8 @@ def compile(src, target=None, options=None):
     metadata_path = metadata_group.get(metadata_filename)
     always_compile = os.environ.get("TRITON_ALWAYS_COMPILE", "0") == "1"
     torch_trace_enabled = os.environ.get("TORCH_TRACE") is not None
+    if torch_trace_enabled:
+        from ..profiler._logging import trace_structured_triton
     torch_trace_data = defaultdict(dict)
     if not always_compile and metadata_path is not None:
         # cache hit!
