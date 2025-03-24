@@ -68,7 +68,8 @@ class ASTSource:
                 self.constants[k] = v
         self.attrs = attrs or dict()
         if isinstance(self.signature, str):
-            self.signature = {k: v.strip() for k, v in enumerate(self.signature.split(","))}
+            self.signature = {k: v.strip()
+                              for k, v in enumerate(self.signature.split(","))}
         else:
             for k in self.signature.keys():
                 if not isinstance(k, str):
@@ -76,8 +77,10 @@ class ASTSource:
 
     def hash(self):
         sorted_sig = [v for k, v in sorted(self.signature.items())]
-        get_key = lambda x: x.cache_key if hasattr(x, 'cache_key') else str(x)
-        constants_key = '-'.join([get_key(v) for k, v in sorted(self.constants.items())])
+        def get_key(x): return x.cache_key if hasattr(
+            x, 'cache_key') else str(x)
+        constants_key = '-'.join([get_key(v)
+                                 for k, v in sorted(self.constants.items())])
         key = f"{self.fn.cache_key}-{str(self.attrs)}-{sorted_sig}-{constants_key}"
         return hashlib.sha256(key.encode("utf-8")).hexdigest()
 
@@ -102,11 +105,13 @@ class IRSource:
         # We don't have a easy-to-use PTX parser that we can use, so keep that regex for now.
         # TODO - replace with a proper parser
         if self.ext == "ptx":
-            match = re.search(prototype_pattern[self.ext], self.src, re.MULTILINE)
+            match = re.search(
+                prototype_pattern[self.ext], self.src, re.MULTILINE)
             self.name = match.group(1)
             signature = match.group(2)
             types = re.findall(arg_type_pattern[self.ext], signature)
-            self.signature = {k: convert_type_repr(ty) for k, ty in enumerate(types)}
+            self.signature = {k: convert_type_repr(
+                ty) for k, ty in enumerate(types)}
         else:
             self.module = ir.parse_mlir_module(self.path, context)
             fn_name = self.module.get_entry_func_name()
@@ -239,7 +244,8 @@ def compile(src, target=None, options=None):
     enable_override = os.environ.get("TRITON_KERNEL_OVERRIDE", "0") == "1"
     enable_ir_dump = os.environ.get("TRITON_KERNEL_DUMP", "0") == "1"
     store_only_binary = os.environ.get("TRITON_STORE_BINARY_ONLY", "0") == "1"
-    fn_override_manager = get_override_manager(src.hash()) if enable_override else None
+    fn_override_manager = get_override_manager(
+        src.hash()) if enable_override else None
     fn_dump_manager = get_dump_manager(src.hash()) if enable_ir_dump else None
     # Pre-truncate the file name here to avoid hitting the 255 character limit on common platforms.
     # The final file name in the cache will have a format of f"{filename}.{ext}.tmp.pid_{pid}_{uuid}".
@@ -250,8 +256,35 @@ def compile(src, target=None, options=None):
     metadata_group = fn_cache_manager.get_group(metadata_filename) or {}
     metadata_path = metadata_group.get(metadata_filename)
     always_compile = os.environ.get("TRITON_ALWAYS_COMPILE", "0") == "1"
+    torch_trace_enabled = os.environ.get("TORCH_TRACE") is not None
+    torch_trace_data = defaultdict(dict)
     if not always_compile and metadata_path is not None:
         # cache hit!
+        if metadata_path is not None:
+            with open(metadata_path, 'r') as f:
+                metadata = json.load(f)
+            if torch_trace_enabled:
+                # Update torch_trace_data with all metadata information
+                for key, value in metadata.items():
+                    torch_trace_data["metadata"][key] = value
+                # Add metadata_group information to torch_trace_data
+                for ir_filename, file_path in metadata_group.items():
+                    # Add file path to trace data
+                    torch_trace_data["file_path"][ir_filename] = file_path
+
+                    # Read and add file content for all files except cubin (binary)
+                    if ir_filename.endswith('.ttir') or ir_filename.endswith('.ttgir') or ir_filename.endswith('.llir') or ir_filename.endswith('.ptx') or ir_filename.endswith('.json'):
+                        try:
+                            with open(file_path, 'r') as f:
+                                torch_trace_data["file_content"][ir_filename] = f.read(
+                                )
+                        except (IOError, UnicodeDecodeError):
+                            # Skip if file can't be read as text
+                            pass
+                trace_structured_triton(
+                    "@findhao triton.kernel",
+                    payload_fn=lambda: json.dumps(torch_trace_data),
+                )
         return CompiledKernel(src, metadata_group, hash)
     # initialize metadata
     metadata = {
@@ -284,8 +317,7 @@ def compile(src, target=None, options=None):
         filter_traceback(e)
         raise
     use_ir_loc = os.environ.get("USE_IR_LOC", None)
-    torch_trace_enabled = os.environ.get("TORCH_TRACE") is not None
-    torch_trace_data = defaultdict(dict)
+
     for ext, compile_ir in list(stages.items())[first_stage:]:
         next_module = compile_ir(module, metadata)
         ir_filename = f"{file_name}.{ext}"
@@ -294,15 +326,16 @@ def compile(src, target=None, options=None):
             next_module = parse(full_name, ext, context)
         # If TRITON_STORE_BINARY_ONLY is 1, only store cubin/hsaco/json
         if (not store_only_binary) or (ext in ("cubin", "hsaco", "json")):
-            metadata_group[ir_filename] = fn_cache_manager.put(next_module, ir_filename)
+            metadata_group[ir_filename] = fn_cache_manager.put(
+                next_module, ir_filename)
         if fn_dump_manager is not None:
             output_path = fn_dump_manager.put(next_module, ir_filename)
             if torch_trace_enabled:
                 torch_trace_data["file_path"][ir_filename] = output_path
-            # if not isinstance(next_module, bytes):
-            #     if not isinstance(next_module, bytes):
-            #         with open(output_path, 'r') as f:
-            #             torch_trace_data["file_content"][ir_filename] = f.read()
+            if not isinstance(next_module, bytes):
+                if not isinstance(next_module, bytes):
+                    with open(output_path, 'r') as f:
+                        torch_trace_data["file_content"][ir_filename] = f.read()
         # use an env variable to parse ir from file
         if use_ir_loc == ext:
             ir_full_name = fn_cache_manager.get_file(ir_filename)
@@ -334,7 +367,8 @@ def compile(src, target=None, options=None):
 
 
 def make_backend(target):
-    actives = [x.compiler for x in backends.values() if x.compiler.supports_target(target)]
+    actives = [x.compiler for x in backends.values(
+    ) if x.compiler.supports_target(target)]
     if len(actives) != 1:
         raise RuntimeError(
             f"{len(actives)} compatible backends for target ({target.backend}) ({actives}). There should only be one.")
@@ -379,13 +413,16 @@ class CompiledKernel:
 
     def __init__(self, src, metadata_group, hash):
         from collections import namedtuple
-        metadata_path = next((Path(p) for c, p in metadata_group.items() if c.endswith(".json")))
+        metadata_path = next(
+            (Path(p) for c, p in metadata_group.items() if c.endswith(".json")))
         metadata = json.loads(metadata_path.read_text())
         metadata['cluster_dims'] = tuple(metadata['cluster_dims'])
         # JSON serialization dumps the target as a dict. Restore it to a GPUTarget.
         target = metadata['target']
-        metadata['target'] = GPUTarget(target['backend'], target['arch'], target['warp_size'])
-        KernelMetadata = namedtuple('KernelMetadata', sorted(list(metadata.keys())))
+        metadata['target'] = GPUTarget(
+            target['backend'], target['arch'], target['warp_size'])
+        KernelMetadata = namedtuple(
+            'KernelMetadata', sorted(list(metadata.keys())))
         self.metadata = KernelMetadata(**metadata)
         backend = make_backend(self.metadata.target)
         self.packed_metadata = backend.pack_metadata(self.metadata)
@@ -393,10 +430,12 @@ class CompiledKernel:
         self.hash = hash
         self.name = self.metadata.name
         # stores the text of each level of IR that was generated during compilation
-        asm_files = [Path(p) for c, p in metadata_group.items() if not c.endswith(".json")]
+        asm_files = [Path(p) for c, p in metadata_group.items()
+                     if not c.endswith(".json")]
         binary_ext = backend.binary_ext
         self.asm = AsmDict({
-            file.suffix[1:]: file.read_bytes() if file.suffix[1:] == binary_ext else file.read_text()
+            file.suffix[1:]: file.read_bytes(
+            ) if file.suffix[1:] == binary_ext else file.read_text()
             for file in asm_files
         })
         self.kernel = self.asm[binary_ext]
@@ -413,14 +452,17 @@ class CompiledKernel:
         # create launcher
         self.run = driver.active.launcher_cls(self.src, self.metadata)
         # not enough shared memory to run the kernel
-        max_shared = driver.active.utils.get_device_properties(device)["max_shared_mem"]
+        max_shared = driver.active.utils.get_device_properties(device)[
+            "max_shared_mem"]
         if self.metadata.shared > max_shared:
-            raise OutOfResources(self.metadata.shared, max_shared, "shared memory")
+            raise OutOfResources(self.metadata.shared,
+                                 max_shared, "shared memory")
         if hasattr(self.metadata, "tmem_size") and self.metadata.tmem_size is not None:
             # Use blackwell max tmem size for now, this should be moved in device properties
             max_tmem_size = 512  # tmem size in number of columns
             if self.metadata.tmem_size > max_tmem_size:
-                raise OutOfResources(self.metadata.tmem_size, max_tmem_size, "tensor memory")
+                raise OutOfResources(
+                    self.metadata.tmem_size, max_tmem_size, "tensor memory")
         # TODO: n_regs, n_spills should be metadata generated when calling `ptxas`
         self.module, self.function, self.n_regs, self.n_spills = driver.active.utils.load_binary(
             self.name, self.kernel, self.metadata.shared, device)
@@ -433,7 +475,8 @@ class CompiledKernel:
     def launch_metadata(self, grid, stream, *args):
         if CompiledKernel.launch_enter_hook is None:
             return None
-        ret = LazyDict({"name": self.name, "function": self.function, "stream": stream})
+        ret = LazyDict(
+            {"name": self.name, "function": self.function, "stream": stream})
         if not isinstance(self.src, ASTSource) or self.src.fn.launch_metadata is None:
             return ret
         arg_dict = {}
