@@ -72,7 +72,7 @@ class TritonTraceHandler(logging.StreamHandler):
 
         # Close previous file if exists
         if self.stream is not None:
-            self.close('\n]')
+            self.close()
 
         # Create unique filename with timestamp
         timestamp = time.strftime("%Y%m%d_%H%M%S")
@@ -92,16 +92,30 @@ class TritonTraceHandler(logging.StreamHandler):
 
         formatted = self.format(record)
         self.stream.write(formatted)
-
         self.flush()
 
-    def close(self, append_text=None):
-        if self.stream:
-            if append_text:
-                self.stream.write(append_text)
-            self.flush()
-            self.stream.close()
-            self.stream = None
+    def close(self, append_text="\n]"):
+        self.acquire()
+        try:
+            try:
+                if self.stream:
+                    try:
+                        if append_text:
+                            self.stream.write(append_text)
+                        self.flush()
+                    finally:
+                        stream = self.stream
+                        self.stream = None
+                        if hasattr(stream, "close"):
+                            stream.close()
+            finally:
+                # PyTorch Issue #19523: call unconditionally to
+                # prevent a handler leak when delay is set
+                # Also see PyTorch Issue #42378: we also rely on
+                # self._closed being set to True there
+                logging.StreamHandler.close(self)
+        finally:
+            self.release()
 
 
 def trace_structured_triton(
@@ -145,7 +159,7 @@ def trace_structured_triton(
 
     # Create new file if requested
     if new_file and TRITON_TRACE_HANDLER and TRITON_TRACE_HANDLER.stream is not None:
-        TRITON_TRACE_HANDLER.close('\n]')
+        TRITON_TRACE_HANDLER.close()
         TRITON_TRACE_HANDLER.stream = None
 
     # Prepare the record
