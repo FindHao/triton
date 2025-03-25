@@ -2,7 +2,7 @@ import logging
 import os
 import json
 import time
-import tempfile
+from collections import defaultdict
 from typing import Optional, Callable, Any, Union
 from torch.utils._traceback import CapturedTraceback
 import torch.distributed as dist
@@ -10,10 +10,11 @@ import torch.distributed as dist
 # Configure basic logging
 log = logging.getLogger(__name__)
 triton_trace_log = logging.getLogger("triton.trace")
-
 # Global variables
 TRACE_ENV_VAR = "TORCH_TRACE"
 TRITON_TRACE_HANDLER = None
+
+torch_trace_folder = os.environ.get(TRACE_ENV_VAR, None)
 
 
 def get_simplified_stack_trace(skip=1):
@@ -194,7 +195,7 @@ def trace_structured_triton(
 def extract_python_source_info(trace_data, source, is_ir_source):
     """
     Extract Python source code information from the source object and add it to trace_data.
-    
+
     Args:
         trace_data: Dictionary to store extracted information
         source: Source object (ASTSource or IRSource)
@@ -202,19 +203,20 @@ def extract_python_source_info(trace_data, source, is_ir_source):
     """
     if is_ir_source or not hasattr(source, 'fn'):
         return
-    
+
     import inspect
     try:
         # Get the original Python source code for the kernel
         target_fn = source.fn.fn
         python_source_file = inspect.getfile(target_fn)
         start_line_number = inspect.getsourcelines(target_fn)[1]
-        end_line_number = start_line_number + len(inspect.getsourcelines(target_fn)[0])
+        end_line_number = start_line_number + \
+            len(inspect.getsourcelines(target_fn)[0])
 
         trace_data["python_source_file_path"] = python_source_file
         trace_data["python_source_start_line_number"] = start_line_number
         trace_data["python_source_end_line_number"] = end_line_number
-        
+
         # Get function source code directly using inspect.getsource()
         trace_data["python_source_code"] = inspect.getsource(target_fn)
     except (TypeError, OSError) as e:
@@ -224,7 +226,7 @@ def extract_python_source_info(trace_data, source, is_ir_source):
 def extract_file_content(trace_data, metadata_group):
     """
     Extract file content from metadata_group and add it to trace_data.
-    
+
     Args:
         trace_data: Dictionary to store extracted information
         metadata_group: Dictionary mapping filenames to file paths
@@ -233,11 +235,33 @@ def extract_file_content(trace_data, metadata_group):
         # Add file path to trace data
         trace_data["file_path"][ir_filename] = file_path
 
-        # Read and add file content for all files except cubin (binary)
-        if ir_filename.endswith('.ttir') or ir_filename.endswith('.ttgir') or ir_filename.endswith('.llir') or ir_filename.endswith('.ptx') or ir_filename.endswith('.json'):
+        # Read and add file content for text-based IR files
+        text_file_extensions = ['.ttir', '.ttgir', '.llir', '.ptx', '.json']
+        if any(ir_filename.endswith(ext) for ext in text_file_extensions):
             try:
                 with open(file_path, 'r') as f:
                     trace_data["file_content"][ir_filename] = f.read()
             except (IOError, UnicodeDecodeError):
                 # Skip if file can't be read as text
                 pass
+
+
+def maybe_trace_triton(metadata_path, metadata_group, src, ir_source):
+    trace_data = defaultdict(dict)
+    if not torch_trace_folder:
+        return trace_data
+    if metadata_path is not None:
+        with open(metadata_path, 'r') as f:
+            metadata = json.load(f)
+            for key, value in metadata.items():
+                trace_data["metadata"][key] = value
+    if metadata_group:
+        extract_file_content(trace_data, metadata_group)
+    if src:
+        extract_python_source_info(trace_data, src, ir_source)
+
+    trace_structured_triton(
+        "triton.kernel",
+        payload_fn=lambda: json.dumps(trace_data),
+    )
+    return trace_data

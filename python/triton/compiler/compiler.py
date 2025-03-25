@@ -9,6 +9,7 @@ from ..runtime.autotuner import OutOfResources
 from ..runtime.cache import get_cache_manager, get_dump_manager, get_override_manager
 from ..runtime.driver import driver
 from ..tools.disasm import get_sass
+from ..tools._logging import maybe_trace_triton
 # TODO: this shouldn't be here
 from .code_generator import ast_to_ttir
 from . import config
@@ -255,30 +256,11 @@ def compile(src, target=None, options=None):
     metadata_group = fn_cache_manager.get_group(metadata_filename) or {}
     metadata_path = metadata_group.get(metadata_filename)
     always_compile = os.environ.get("TRITON_ALWAYS_COMPILE", "0") == "1"
-    torch_trace_enabled = os.environ.get("TORCH_TRACE") is not None
-    if torch_trace_enabled:
-        from ..profiler._logging import trace_structured_triton, extract_python_source_info, extract_file_content
+
     torch_trace_data = defaultdict(dict)
     if not always_compile and metadata_path is not None:
         # cache hit!
-        if metadata_path is not None:
-            with open(metadata_path, 'r') as f:
-                metadata = json.load(f)
-            if torch_trace_enabled:
-                # Update torch_trace_data with all metadata information
-                for key, value in metadata.items():
-                    torch_trace_data["metadata"][key] = value
-                
-                # Extract file content
-                extract_file_content(torch_trace_data, metadata_group)
-                
-                # Extract Python source code if available
-                extract_python_source_info(torch_trace_data, src, ir_source)
-
-                trace_structured_triton(
-                    "triton.kernel",
-                    payload_fn=lambda: json.dumps(torch_trace_data),
-                )
+        maybe_trace_triton(metadata_path, metadata_group, src, ir_source)
         return CompiledKernel(src, metadata_group, hash)
     # initialize metadata
     metadata = {
@@ -324,32 +306,12 @@ def compile(src, target=None, options=None):
                 next_module, ir_filename)
         if fn_dump_manager is not None:
             output_path = fn_dump_manager.put(next_module, ir_filename)
-            if torch_trace_enabled:
-                torch_trace_data["file_path"][ir_filename] = output_path
-                if not isinstance(next_module, bytes):
-                    try:
-                        with open(output_path, 'r') as f:
-                            torch_trace_data["file_content"][ir_filename] = f.read()
-                    except (IOError, UnicodeDecodeError):
-                        # Skip if file can't be read as text
-                        pass
         # use an env variable to parse ir from file
         if use_ir_loc == ext:
             ir_full_name = fn_cache_manager.get_file(ir_filename)
             next_module.create_location_snapshot(ir_full_name)
             print(f"Creating new locations for {ir_full_name}")
         module = next_module
-
-    # Extract Python source code if available (for ASTSource)
-    if torch_trace_enabled:
-        extract_python_source_info(torch_trace_data, src, ir_source)
-        
-    # Log trace data
-    if torch_trace_data:
-        trace_structured_triton(
-            "triton.kernel",
-            payload_fn=lambda: json.dumps(torch_trace_data),
-        )
 
     # write-back metadata
     metadata_group[metadata_filename] = fn_cache_manager.put(json.dumps(metadata, default=vars), metadata_filename,
@@ -366,6 +328,8 @@ def compile(src, target=None, options=None):
     # multithreading in the MLIR context
     if not os.environ.get("TRITON_ENABLE_ASAN", "0") == "1":
         context.disable_multithreading()
+    maybe_trace_triton(
+        metadata_group[metadata_filename], metadata_group, src, ir_source)
     # return handle to compiled kernel
     return CompiledKernel(src, metadata_group, hash)
 
