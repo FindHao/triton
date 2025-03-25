@@ -18,11 +18,11 @@ log = logging.getLogger(__name__)
 triton_trace_log = logging.getLogger("triton.trace")
 
 # Global variables
-TRACE_ENV_VAR = "TORCH_TRACE"
+TRACE_ENV_VAR = "TRITON_TRACE"
 TRITON_TRACE_HANDLER = None
 
 # Initialize tracing directory from environment variable
-torch_trace_folder = os.environ.get(TRACE_ENV_VAR, None)
+triton_trace_folder = os.environ.get(TRACE_ENV_VAR, None)
 
 
 def get_simplified_stack_trace(skip=1):
@@ -298,7 +298,7 @@ def maybe_trace_triton(metadata_path, metadata_group, src, ir_source):
     trace_data = defaultdict(dict)
 
     # Early return if tracing is not enabled
-    if not torch_trace_folder:
+    if not triton_trace_folder:
         return trace_data
 
     # Extract metadata from the JSON file if available
