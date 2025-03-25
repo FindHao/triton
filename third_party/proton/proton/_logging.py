@@ -189,3 +189,55 @@ def trace_structured_triton(
     # Log the record
     payload = payload_fn()
     triton_trace_log.debug("", extra={"metadata": record, "payload": payload})
+
+
+def extract_python_source_info(trace_data, source, is_ir_source):
+    """
+    Extract Python source code information from the source object and add it to trace_data.
+    
+    Args:
+        trace_data: Dictionary to store extracted information
+        source: Source object (ASTSource or IRSource)
+        is_ir_source: Whether the source is an IR source
+    """
+    if is_ir_source or not hasattr(source, 'fn'):
+        return
+    
+    import inspect
+    try:
+        # Get the original Python source code for the kernel
+        target_fn = source.fn.fn
+        python_source_file = inspect.getfile(target_fn)
+        start_line_number = inspect.getsourcelines(target_fn)[1]
+        end_line_number = start_line_number + len(inspect.getsourcelines(target_fn)[0])
+
+        trace_data["python_source_file_path"] = python_source_file
+        trace_data["python_source_start_line_number"] = start_line_number
+        trace_data["python_source_end_line_number"] = end_line_number
+        
+        # Get function source code directly using inspect.getsource()
+        trace_data["python_source_code"] = inspect.getsource(target_fn)
+    except (TypeError, OSError) as e:
+        trace_data["python_source_error"] = str(e)
+
+
+def extract_file_content(trace_data, metadata_group):
+    """
+    Extract file content from metadata_group and add it to trace_data.
+    
+    Args:
+        trace_data: Dictionary to store extracted information
+        metadata_group: Dictionary mapping filenames to file paths
+    """
+    for ir_filename, file_path in metadata_group.items():
+        # Add file path to trace data
+        trace_data["file_path"][ir_filename] = file_path
+
+        # Read and add file content for all files except cubin (binary)
+        if ir_filename.endswith('.ttir') or ir_filename.endswith('.ttgir') or ir_filename.endswith('.llir') or ir_filename.endswith('.ptx') or ir_filename.endswith('.json'):
+            try:
+                with open(file_path, 'r') as f:
+                    trace_data["file_content"][ir_filename] = f.read()
+            except (IOError, UnicodeDecodeError):
+                # Skip if file can't be read as text
+                pass

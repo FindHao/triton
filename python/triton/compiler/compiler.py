@@ -257,7 +257,7 @@ def compile(src, target=None, options=None):
     always_compile = os.environ.get("TRITON_ALWAYS_COMPILE", "0") == "1"
     torch_trace_enabled = os.environ.get("TORCH_TRACE") is not None
     if torch_trace_enabled:
-        from ..profiler._logging import trace_structured_triton
+        from ..profiler._logging import trace_structured_triton, extract_python_source_info, extract_file_content
     torch_trace_data = defaultdict(dict)
     if not always_compile and metadata_path is not None:
         # cache hit!
@@ -268,22 +268,15 @@ def compile(src, target=None, options=None):
                 # Update torch_trace_data with all metadata information
                 for key, value in metadata.items():
                     torch_trace_data["metadata"][key] = value
-                # Add metadata_group information to torch_trace_data
-                for ir_filename, file_path in metadata_group.items():
-                    # Add file path to trace data
-                    torch_trace_data["file_path"][ir_filename] = file_path
+                
+                # Extract file content
+                extract_file_content(torch_trace_data, metadata_group)
+                
+                # Extract Python source code if available
+                extract_python_source_info(torch_trace_data, src, ir_source)
 
-                    # Read and add file content for all files except cubin (binary)
-                    if ir_filename.endswith('.ttir') or ir_filename.endswith('.ttgir') or ir_filename.endswith('.llir') or ir_filename.endswith('.ptx') or ir_filename.endswith('.json'):
-                        try:
-                            with open(file_path, 'r') as f:
-                                torch_trace_data["file_content"][ir_filename] = f.read(
-                                )
-                        except (IOError, UnicodeDecodeError):
-                            # Skip if file can't be read as text
-                            pass
                 trace_structured_triton(
-                    "@findhao triton.kernel",
+                    "triton.kernel",
                     payload_fn=lambda: json.dumps(torch_trace_data),
                 )
         return CompiledKernel(src, metadata_group, hash)
@@ -333,21 +326,31 @@ def compile(src, target=None, options=None):
             output_path = fn_dump_manager.put(next_module, ir_filename)
             if torch_trace_enabled:
                 torch_trace_data["file_path"][ir_filename] = output_path
-            if not isinstance(next_module, bytes):
                 if not isinstance(next_module, bytes):
-                    with open(output_path, 'r') as f:
-                        torch_trace_data["file_content"][ir_filename] = f.read()
+                    try:
+                        with open(output_path, 'r') as f:
+                            torch_trace_data["file_content"][ir_filename] = f.read()
+                    except (IOError, UnicodeDecodeError):
+                        # Skip if file can't be read as text
+                        pass
         # use an env variable to parse ir from file
         if use_ir_loc == ext:
             ir_full_name = fn_cache_manager.get_file(ir_filename)
             next_module.create_location_snapshot(ir_full_name)
             print(f"Creating new locations for {ir_full_name}")
         module = next_module
+
+    # Extract Python source code if available (for ASTSource)
+    if torch_trace_enabled:
+        extract_python_source_info(torch_trace_data, src, ir_source)
+        
+    # Log trace data
     if torch_trace_data:
         trace_structured_triton(
-            "@findhao triton.kernel",
+            "triton.kernel",
             payload_fn=lambda: json.dumps(torch_trace_data),
         )
+
     # write-back metadata
     metadata_group[metadata_filename] = fn_cache_manager.put(json.dumps(metadata, default=vars), metadata_filename,
                                                              binary=False)
