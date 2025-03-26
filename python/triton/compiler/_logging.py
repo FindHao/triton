@@ -5,8 +5,6 @@ import time
 import atexit
 from collections import defaultdict
 from typing import Optional, Callable, Any, Union, Dict, List
-from torch.utils._traceback import CapturedTraceback
-import torch.distributed as dist
 
 # Constants for file extensions
 TEXT_FILE_EXTENSIONS = ['.ttir', '.ttgir', '.llir', '.ptx', '.json']
@@ -28,14 +26,19 @@ triton_trace_folder = os.environ.get(TRACE_ENV_VAR, None)
 def get_simplified_stack_trace(skip=1):
     """
     Get a simplified stack trace.
-    
+
     Args:
         skip (int): Number of frames to skip from the start
-        
+
     Returns:
         List[Dict]: List of frame information dictionaries
     """
     frames = []
+    try:
+        from torch.utils._traceback import CapturedTraceback
+    except ImportError:
+        return frames  # Return an empty list if import fails
+
     for frame in CapturedTraceback.extract(skip=skip).summary():
         frames.append({
             "line": frame.lineno,
@@ -83,11 +86,6 @@ class TritonTraceHandler(logging.StreamHandler):
         atexit.register(self._cleanup)
 
     def emit(self, record):
-        # Create a new file for each emit call
-        if self.root_dir is None:
-            self.root_dir = os.environ.get(
-                TRACE_ENV_VAR) or "/tmp/triton_traces"
-
         os.makedirs(self.root_dir, exist_ok=True)
 
         # Close previous file if exists
@@ -96,9 +94,7 @@ class TritonTraceHandler(logging.StreamHandler):
 
         # Create unique filename with timestamp
         timestamp = time.strftime("%Y%m%d_%H%M%S")
-        rank_suffix = f"_rank{dist.get_rank()}" if dist.is_available(
-        ) and dist.is_initialized() else ""
-        filename = f"{self.prefix}{timestamp}{rank_suffix}.json"
+        filename = f"{self.prefix}{timestamp}.json"
 
         self.stream = open(os.path.join(self.root_dir, filename), "w")
         self.stream.write("[\n")  # Start JSON array
@@ -137,11 +133,11 @@ class TritonTraceHandler(logging.StreamHandler):
                 logging.StreamHandler.close(self)
         finally:
             self.release()
-    
+
     def _cleanup(self):
         """Ensure proper cleanup on program exit"""
         if self.stream is not None:
-            self.close("\n]")
+            self.close()
 
 
 def trace_structured_triton(
@@ -149,28 +145,21 @@ def trace_structured_triton(
     metadata_fn: Callable[[], Dict[str, Any]] = dict,
     *,
     payload_fn: Callable[[], Optional[Union[str, object]]] = lambda: None,
-    kernel_name: Optional[str] = None,
-    grid_size: Optional[tuple] = None,
-    compile_time_ms: Optional[float] = None,
     new_file: bool = True,
 ):
     """
     Record structured trace information for Triton kernel compilation
-    
+
     Args:
         name: Name of the trace event
         metadata_fn: Function that returns metadata dictionary
         payload_fn: Function that returns payload data
-        kernel_name: Triton kernel name
-        grid_size: Grid size
-        compile_time_ms: Compile time in milliseconds
         new_file: Whether to create a new log file for this call
     """
     global TRITON_TRACE_HANDLER
-
+    global triton_trace_folder
     # Initialize logging if needed
     if not triton_trace_log.handlers or TRITON_TRACE_HANDLER is None:
-        trace_dir = os.environ.get(TRACE_ENV_VAR)
         triton_trace_log.setLevel(logging.DEBUG)
         triton_trace_log.propagate = False
 
@@ -178,38 +167,22 @@ def trace_structured_triton(
         for handler in list(triton_trace_log.handlers):
             triton_trace_log.removeHandler(handler)
 
-        TRITON_TRACE_HANDLER = TritonTraceHandler(trace_dir)
+        TRITON_TRACE_HANDLER = TritonTraceHandler(triton_trace_folder)
         formatter = TritonJsonFormatter()
         TRITON_TRACE_HANDLER.setFormatter(formatter)
         triton_trace_log.addHandler(TRITON_TRACE_HANDLER)
 
     # Create new file if requested
     if new_file and TRITON_TRACE_HANDLER and TRITON_TRACE_HANDLER.stream is not None:
-        TRITON_TRACE_HANDLER.close("\n]")
+        TRITON_TRACE_HANDLER.close()
         TRITON_TRACE_HANDLER.stream = None
 
-    # Prepare the record
     record = {"event_type": name}
-
-    # Add Triton-specific metadata
-    if kernel_name:
-        record["kernel_name"] = kernel_name
-    if grid_size:
-        record["grid_size"] = grid_size
-    if compile_time_ms:
-        record["compile_time_ms"] = compile_time_ms
-
-    # Add basic context information
     record["pid"] = os.getpid()
-    if dist.is_available() and dist.is_initialized():
-        record["rank"] = dist.get_rank()
-
-    # Add custom metadata
     custom_metadata = metadata_fn()
     if custom_metadata:
         record.update(custom_metadata)
 
-    # Get stack trace
     record["stack"] = get_simplified_stack_trace(skip=2)
 
     # Log the record
@@ -220,7 +193,7 @@ def trace_structured_triton(
 def extract_python_source_info(trace_data, source, is_ir_source):
     """
     Extract Python source code information from the source object and add it to trace_data.
-    
+
     Args:
         trace_data (Dict): Dictionary to store extracted information
         source: Source object (ASTSource or IRSource)
@@ -231,29 +204,24 @@ def extract_python_source_info(trace_data, source, is_ir_source):
         return
 
     import inspect
-    try:
-        # Get the original Python source code for the kernel
-        target_fn = source.fn.fn
-        python_source_file = inspect.getfile(target_fn)
-        source_lines, start_line_number = inspect.getsourcelines(target_fn)
-        end_line_number = start_line_number + len(source_lines)
+    # Get the original Python source code for the kernel
+    target_fn = source.fn.fn
+    python_source_file = inspect.getfile(target_fn)
+    source_lines, start_line_number = inspect.getsourcelines(target_fn)
+    end_line_number = start_line_number + len(source_lines)
 
-        # Store source information in trace data
-        trace_data["python_source_file_path"] = python_source_file
-        trace_data["python_source_start_line_number"] = start_line_number
-        trace_data["python_source_end_line_number"] = end_line_number
-        
-        # Get function source code directly using inspect.getsource()
-        trace_data["python_source_code"] = inspect.getsource(target_fn)
-    except (TypeError, OSError) as e:
-        # Record detailed error information
-        trace_data["python_source_error"] = f"Error extracting source: {type(e).__name__}: {str(e)}"
+    trace_data["python_source"] = {
+        "file_path": python_source_file,
+        "start_line": start_line_number,
+        "end_line": end_line_number,
+        "code": inspect.getsource(target_fn)
+    }
 
 
 def extract_file_content(trace_data, metadata_group):
     """
     Extract file content from metadata_group and add it to trace_data.
-    
+
     Args:
         trace_data (Dict): Dictionary to store extracted information
         metadata_group (Dict): Dictionary mapping filenames to file paths
@@ -268,9 +236,10 @@ def extract_file_content(trace_data, metadata_group):
                 # Check file size before reading to avoid memory issues
                 file_size = os.path.getsize(file_path)
                 if file_size > MAX_FILE_SIZE:
-                    trace_data["file_content"][ir_filename] = f"<file too large: {file_size} bytes>"
+                    trace_data["file_content"][
+                        ir_filename] = f"<file too large: {file_size} bytes>"
                     continue
-                    
+
                 with open(file_path, 'r') as f:
                     trace_data["file_content"][ir_filename] = f.read()
             except (IOError, UnicodeDecodeError) as e:
@@ -281,16 +250,16 @@ def extract_file_content(trace_data, metadata_group):
 def maybe_trace_triton(metadata_path, metadata_group, src, ir_source):
     """
     Collect and trace Triton kernel compilation information for debugging and profiling.
-    
+
     This function gathers metadata, IR files, and source code information about a Triton
     kernel compilation, then logs it through the tracing system if tracing is enabled.
-    
+
     Args:
         metadata_path (str): Path to the JSON metadata file for the compiled kernel
         metadata_group (dict): Dictionary mapping filenames to file paths for all compilation artifacts
         src (ASTSource or IRSource): Source object containing kernel information
         ir_source (bool): Whether the source is an IR source (True) or Python source (False)
-        
+
     Returns:
         dict: Dictionary containing all collected trace data, even if tracing is disabled
     """
