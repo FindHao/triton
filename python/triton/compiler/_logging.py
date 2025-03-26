@@ -8,7 +8,6 @@ from typing import Optional, Callable, Any, Union, Dict, List
 
 # Constants for file extensions
 TEXT_FILE_EXTENSIONS = ['.ttir', '.ttgir', '.llir', '.ptx', '.json']
-BINARY_FILE_EXTENSIONS = ['.cubin', '.hsaco']
 MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB limit for file content extraction
 
 # Configure basic logging
