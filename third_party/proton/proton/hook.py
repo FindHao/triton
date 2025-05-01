@@ -36,7 +36,9 @@ def unregister_triton_hook() -> None:
         knobs.runtime.launch_exit_hook = None
 
 def register_structured_logging_hook() -> None:
+    print("here1")
     if knobs.runtime.compilation_hook is None:
+        print("here2")
         knobs.runtime.compilation_hook = maybe_trace_triton
 
 def unregister_structured_logging_hook() -> None:

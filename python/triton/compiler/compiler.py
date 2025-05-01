@@ -393,7 +393,7 @@ class CompiledKernel:
         # (e.g., checking amount of shared memory on current device)
         self.module = None
         self.function = None
-        self._call_hook(knobs.runtime_knobs.compilation_hook)
+        self._call_hook(knobs.runtime_knobs.compilation_hook, metadata_path=metadata_path, metadata_group=metadata_group, src=src)
 
 
     def _init_handles(self):
@@ -450,7 +450,7 @@ class CompiledKernel:
 
         return runner
 
-    def _call_hook(self, hook):
+    def _call_hook(self, hook, metadata_path, metadata_group, src):
         if not hook:
             return None
         return hook(metadata_path=metadata_path, metadata_group=metadata_group, src=src)

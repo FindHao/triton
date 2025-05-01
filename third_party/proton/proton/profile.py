@@ -81,6 +81,8 @@ def start(
     Returns:
         session (int): The session ID of the profiling session.
     """
+    register_structured_logging_hook()
+    print("here3")
     if is_command_line():
         # Ignore the start() call if the script is run from the command line.
         return

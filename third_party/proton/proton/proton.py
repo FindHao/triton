@@ -72,6 +72,7 @@ def do_setup_and_execute(target_args, instrumentation_pass=None):
 
     script = target_args[0]
     script_args = target_args[1:] if len(target_args) > 1 else []
+    print("here4")
     if is_pytest(script):
         import pytest
         pytest.main(script_args)
