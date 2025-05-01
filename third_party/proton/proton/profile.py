@@ -81,7 +81,7 @@ def start(
     Returns:
         session (int): The session ID of the profiling session.
     """
-    register_structured_logging_hook()
+    # register_structured_logging_hook()
     print("here3")
     if is_command_line():
         # Ignore the start() call if the script is run from the command line.
@@ -102,7 +102,7 @@ def start(
         if hook == "triton":
             register_triton_hook()
         elif hook == "structured_logging":
-            "heree"
+            print("heree")
             register_structured_logging_hook()
             
     
