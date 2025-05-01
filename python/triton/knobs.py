@@ -324,6 +324,9 @@ class JITHook(Protocol):
                  already_compiled: bool) -> Optional[bool]:
         ...
 
+class CompilationHook(Protocol):
+    def __call__(self, *, metadata_path, metadata_group, src) -> Optional[bool]:
+        ...
 
 class runtime_knobs(base_knobs):
     interpret: env_bool = env_bool("TRITON_INTERPRET")
@@ -338,6 +341,7 @@ class runtime_knobs(base_knobs):
     # Hook to signal that a kernel is done compiling and inspect compiled function.
     # jit_cache_hook will always be called before compilation and jit_post_compile_hook after.
     jit_post_compile_hook: Optional[JITHook] = None
+    compilation_hook: Optional[CompilationHook] = None
 
 
 class language_knobs(base_knobs):

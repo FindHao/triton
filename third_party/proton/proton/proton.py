@@ -20,7 +20,7 @@ def parse_arguments():
     parser.add_argument("-c", "--context", type=str, help="Profiling context", default="shadow",
                         choices=["shadow", "python"])
     parser.add_argument("-d", "--data", type=str, help="Profiling data", default="tree", choices=["tree"])
-    parser.add_argument("-k", "--hook", type=str, help="Profiling hook", default=None, choices=[None, "triton"])
+    parser.add_argument("-k", "--hook", type=str, help="Profiling hook", default=None, choices=[None, "triton", "structured_logging"])
     parser.add_argument("-i", "--instrument", type=str, help="Instrumentation analysis type", default=None,
                         choices=[None, "print-mem-spaces"])
     parser.add_argument('target_args', nargs=argparse.REMAINDER, help='Subcommand and its arguments')

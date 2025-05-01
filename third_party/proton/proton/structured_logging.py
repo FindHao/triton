@@ -15,8 +15,6 @@ from collections import defaultdict
 from pathlib import Path
 from typing import Any, Callable, cast, Dict, Optional, Union
 
-from .. import knobs
-
 
 # Define a custom LogRecord type with additional attributes for structured logging
 class TritonLogRecord(logging.LogRecord):
@@ -29,9 +27,8 @@ MAX_FILE_SIZE = 100 * 1024 * 1024  # 100MB limit for file content extraction
 
 log = logging.getLogger(__name__)
 triton_trace_log = logging.getLogger("triton.trace")
-triton_trace_folder = knobs.structured_logging.triton_trace
 TRITON_TRACE_HANDLER = None
-
+triton_trace_folder = None
 
 def _init_logs():
     """
@@ -312,6 +309,7 @@ def maybe_trace_triton(
         Dict[str, Any]: Dictionary containing all collected trace data, even if tracing is disabled
     """
     # Initialize a dictionary with defaultdict to avoid key errors
+    print("========maybe_trace_triton")
     trace_data = defaultdict(dict)
 
     # Extract metadata from the JSON file if available
@@ -357,4 +355,4 @@ def maybe_trace_triton(
     return trace_data
 
 
-_init_logs()
+# _init_logs()

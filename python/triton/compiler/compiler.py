@@ -9,7 +9,6 @@ from ..runtime.autotuner import OutOfResources
 from ..runtime.cache import get_cache_manager, get_dump_manager, get_override_manager
 from ..runtime.driver import driver
 from ..tools.disasm import get_sass
-from ..tools.structured_logging import maybe_trace_triton
 # TODO: this shouldn't be here
 from .code_generator import ast_to_ttir
 from pathlib import Path
@@ -17,6 +16,7 @@ import re
 import functools
 import os
 import sysconfig
+
 
 # - ^\s*tt\.func\s+ : match the start of the string, any leading whitespace, the keyword func,
 #    and any following whitespace
@@ -393,7 +393,7 @@ class CompiledKernel:
         # (e.g., checking amount of shared memory on current device)
         self.module = None
         self.function = None
-        maybe_trace_triton(metadata_path, metadata_group, src)
+        self._call_hook(knobs.runtime_knobs.compilation_hook)
 
 
     def _init_handles(self):
@@ -449,3 +449,8 @@ class CompiledKernel:
                      knobs.runtime.launch_enter_hook, knobs.runtime.launch_exit_hook, *args)
 
         return runner
+
+    def _call_hook(self, hook):
+        if not hook:
+            return None
+        return hook(metadata_path=metadata_path, metadata_group=metadata_group, src=src)

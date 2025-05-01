@@ -1,8 +1,9 @@
+from ast import Str
 from .state import enter_state, exit_state
 from .scope import enter_scope, exit_scope
 from triton import knobs
 from triton.compiler import LazyDict
-
+from .structured_logging import maybe_trace_triton
 COMPUTE_METADATA_SCOPE_NAME = "__proton_launch_metadata"
 
 
@@ -33,3 +34,11 @@ def unregister_triton_hook() -> None:
     if knobs.runtime.launch_enter_hook == TritonHook.enter:
         knobs.runtime.launch_enter_hook = None
         knobs.runtime.launch_exit_hook = None
+
+def register_structured_logging_hook() -> None:
+    if knobs.runtime.compilation_hook is None:
+        knobs.runtime.compilation_hook = maybe_trace_triton
+
+def unregister_structured_logging_hook() -> None:
+    if knobs.runtime.compilation_hook == maybe_trace_triton:
+        knobs.runtime.compilation_hook = None

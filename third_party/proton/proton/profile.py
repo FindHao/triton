@@ -5,7 +5,7 @@ import pathlib
 
 from triton import knobs
 from triton._C.libproton import proton as libproton
-from .hook import register_triton_hook, unregister_triton_hook
+from .hook import register_triton_hook, unregister_triton_hook, register_structured_logging_hook
 from .flags import set_profiling_off, set_profiling_on, is_command_line
 from typing import Optional
 
@@ -96,8 +96,14 @@ def start(
     backend_path = _get_backend_default_path(backend)
 
     set_profiling_on()
-    if hook and hook == "triton":
-        register_triton_hook()
+    if hook:
+        if hook == "triton":
+            register_triton_hook()
+        elif hook == "structured_logging":
+            "heree"
+            register_structured_logging_hook()
+            
+    
     return libproton.start(name, context, data, backend, backend_path)
 
 
