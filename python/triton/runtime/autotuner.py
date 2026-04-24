@@ -248,7 +248,7 @@ class Autotuner(KernelInterface):
                         key=key,
                         best_config=self.cache[key],
                         configs_timings=self.configs_timings,
-                        duration=getattr(self, 'bench_time', None),
+                        duration=getattr(self, 'bench_time', None) if not used_cached_result else None,
                         cache_hit=used_cached_result,
                     )
 
