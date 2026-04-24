@@ -90,7 +90,7 @@ def test_autotune_listener_in_memory_cache_hit(device: str, fresh_knobs) -> None
     assert len(captured) == 1
 
 
-def test_autotune_listener_disk_cache_hit(device: str, fresh_knobs, tmp_path) -> None:
+def test_autotune_listener_disk_cache_hit(device: str, fresh_knobs, fresh_triton_cache) -> None:
     """Test that the listener fires with cache_hit=True and duration=None on disk cache hit."""
     captured = []
 
