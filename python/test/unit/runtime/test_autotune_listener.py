@@ -90,18 +90,21 @@ def test_autotune_listener_in_memory_cache_hit(device: str, fresh_knobs) -> None
     assert len(captured) == 1
 
 
-def test_autotune_listener_different_key(device: str, fresh_knobs) -> None:
-    """Test that the listener fires again for a different autotune key."""
+def test_autotune_listener_disk_cache_hit(device: str, fresh_knobs, tmp_path) -> None:
+    """Test that the listener fires with cache_hit=True and duration=None on disk cache hit."""
     captured = []
 
     def listener(*, fn, key, best_config, configs_timings, duration, cache_hit):
-        captured.append({"key": key})
+        captured.append({
+            "cache_hit": cache_hit,
+            "duration": duration,
+        })
 
     fresh_knobs.autotuning.listener = listener
 
     configs = [triton.Config({"BLOCK_SIZE": 32}), triton.Config({"BLOCK_SIZE": 128})]
 
-    @triton.autotune(configs=configs, key=["N"], do_bench=do_bench)
+    @triton.autotune(configs=configs, key=["N"], do_bench=do_bench, cache_results=True)
     @triton.jit
     def _kernel(dst, src, N, BLOCK_SIZE: tl.constexpr):
         offsets = tl.program_id(0) * BLOCK_SIZE + tl.arange(0, BLOCK_SIZE)
@@ -112,14 +115,20 @@ def test_autotune_listener_different_key(device: str, fresh_knobs) -> None:
     src = torch.randn(N, device=device)
     dst = torch.empty(N, device=device)
 
-    # First key
+    # First call: fresh benchmark, populates disk cache
     _kernel[(triton.cdiv(N, 32), )](dst, src, N=N)
     assert len(captured) == 1
+    assert not captured[0]["cache_hit"]
+    assert captured[0]["duration"] is not None and captured[0]["duration"] > 0
 
-    # Different key (N // 2)
-    _kernel[(triton.cdiv(N // 2, 32), )](dst[:N // 2], src[:N // 2], N=N // 2)
+    # Clear in-memory cache so next call hits disk cache
+    _kernel.cache.clear()
+
+    # Second call: disk cache hit
+    _kernel[(triton.cdiv(N, 32), )](dst, src, N=N)
     assert len(captured) == 2
-    assert captured[0]["key"] != captured[1]["key"]
+    assert captured[1]["cache_hit"]
+    assert captured[1]["duration"] is None
 
 
 def test_autotune_listener_single_config(device: str, fresh_knobs) -> None:
