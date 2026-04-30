@@ -88,9 +88,6 @@ class Autotuner(KernelInterface):
         self.base_fn = fn
         while not inspect.isfunction(self.base_fn):
             self.base_fn = self.base_fn.fn
-        self._jit_fn = fn
-        while not isinstance(self._jit_fn, JITFunction):
-            self._jit_fn = self._jit_fn.fn
 
         self._do_bench = do_bench
         self.num_warmups = warmup
@@ -178,17 +175,21 @@ class Autotuner(KernelInterface):
 
         from triton.compiler.compiler import make_backend
 
+        jit_fn = self.fn
+        while not isinstance(jit_fn, JITFunction):
+            jit_fn = jit_fn.fn
+
         env_vars = get_cache_invalidating_env_vars()
         cache_key = [
             triton_key(),
             make_backend(driver.active.get_current_target()).hash(),
-            self._jit_fn.cache_key,
+            jit_fn.cache_key,
             str(sorted(env_vars.items())),
             str(tuning_key),
         ] + [str(c) for c in configs]
         cache_key = hashlib.sha256("-".join(cache_key).encode("utf-8")).hexdigest()
         cache = get_cache_manager(cache_key)
-        file_name = f"{self._jit_fn.__name__[:150]}.autotune.json"
+        file_name = f"{jit_fn.__name__[:150]}.autotune.json"
         path = cache.get_file(file_name)
         if path:
             with open(path, "r") as cached_configs:
@@ -239,8 +240,11 @@ class Autotuner(KernelInterface):
                     benchmark()
 
                 if knobs.autotuning.listener is not None:
+                    jit_fn = self.fn
+                    while not isinstance(jit_fn, JITFunction):
+                        jit_fn = jit_fn.fn
                     knobs.autotuning.listener(
-                        fn=self._jit_fn,
+                        fn=jit_fn,
                         key=key,
                         best_config=self.cache[key],
                         configs_timings=self.configs_timings,
