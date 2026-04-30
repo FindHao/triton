@@ -175,21 +175,21 @@ class Autotuner(KernelInterface):
 
         from triton.compiler.compiler import make_backend
 
-        jit_fn = self.fn
-        while not isinstance(jit_fn, JITFunction):
-            jit_fn = jit_fn.fn
+        fn = self.fn
+        while not isinstance(fn, JITFunction):
+            fn = fn.fn
 
         env_vars = get_cache_invalidating_env_vars()
         cache_key = [
             triton_key(),
             make_backend(driver.active.get_current_target()).hash(),
-            jit_fn.cache_key,
+            fn.cache_key,
             str(sorted(env_vars.items())),
             str(tuning_key),
         ] + [str(c) for c in configs]
         cache_key = hashlib.sha256("-".join(cache_key).encode("utf-8")).hexdigest()
         cache = get_cache_manager(cache_key)
-        file_name = f"{jit_fn.__name__[:150]}.autotune.json"
+        file_name = f"{fn.__name__[:150]}.autotune.json"
         path = cache.get_file(file_name)
         if path:
             with open(path, "r") as cached_configs:
