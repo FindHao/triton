@@ -26,6 +26,15 @@ struct TMemLdStEncodingInfo {
   bool padding = false;
 };
 
+// Return the physical (register, lane, warp) -> (row, col) TMEM layout used by
+// tcgen05 load/store lowering, including the implicit warp-to-row mapping the
+// hardware access atoms require. Analyses that need to reason about which
+// physical cells a warp touches should use this rather than re-deriving the
+// mapping, so they cannot disagree with what is actually generated.
+FailureOr<LinearLayout> computeTMemLdStPhysicalLayout(
+    RankedTensorType regTy, gpu::MemDescType memTy,
+    std::function<InFlightDiagnostic()> emitError = {});
+
 FailureOr<TMemLdStEncodingInfo>
 computeTMemLdStEncodingInfo(RankedTensorType regTy, gpu::MemDescType memTy,
                             int maxnreg,
