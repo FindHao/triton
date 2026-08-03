@@ -2,6 +2,7 @@
 #include "triton/Analysis/Membar.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Dialect/TritonNvidiaGPU/IR/Dialect.h"
+#include "triton/Dialect/TritonNvidiaGPU/IR/TensorMemoryUtils.h"
 #include "triton/Dialect/TritonNvidiaGPU/Transforms/Passes.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -50,31 +51,6 @@ static TMemAccessKind getTMemAccessKind(Operation *op) {
   if (isMMALikeOp(op))
     return TMemAccessKind::MMA;
   return TMemAccessKind::None;
-}
-
-static bool filterFn(Operation *lhs, Operation *rhs, bool /*lhsIsRead*/,
-                     bool /*rhsIsRead*/, Allocation * /*allocation*/) {
-  TMemAccessKind lhsKind = getTMemAccessKind(lhs);
-  TMemAccessKind rhsKind = getTMemAccessKind(rhs);
-
-  bool war =
-      lhsKind == TMemAccessKind::Load && rhsKind == TMemAccessKind::Store;
-  bool raw =
-      lhsKind == TMemAccessKind::Store && rhsKind == TMemAccessKind::Load;
-  bool waw =
-      lhsKind == TMemAccessKind::Store && rhsKind == TMemAccessKind::Store;
-
-  // MMAv5 ops and tmem_copy are special cases, we care about load->mma and
-  // store->mma dependencies but mma -> load/store doesn't require a barrier
-  // since it would need a mbarrier wait that will ensure the op is finished
-  // before any thread can reach the load/store.
-  bool loadToMma =
-      lhsKind == TMemAccessKind::Load && rhsKind == TMemAccessKind::MMA;
-  bool storeToMma =
-      lhsKind == TMemAccessKind::Store && rhsKind == TMemAccessKind::MMA;
-
-  bool requiresBarrier = war || raw || waw || loadToMma || storeToMma;
-  return !requiresBarrier;
 }
 
 static bool isTensorMemory(Value value) {
@@ -261,6 +237,161 @@ static SmallVector<AllocationSlice> getTMemSlices(Value value) {
     }
   }
   return slices;
+}
+
+// Physical (row, 32-bit column) base of a view, or nullopt when it cannot be
+// pinned to exactly one allocation at a statically known offset.
+static std::optional<TMemViewOffset> getPhysicalBase(Value value) {
+  SmallVector<RootAlloc> allocs;
+  bool unknown = false;
+  appendRootAllocs(value, allocs, unknown);
+  if (unknown || allocs.size() != 1 || !allocs[0].offset.known)
+    return std::nullopt;
+
+  auto colAttr =
+      allocs[0].alloc->getAttrOfType<IntegerAttr>("tensor_memory_col_offset");
+  auto rowAttr =
+      allocs[0].alloc->getAttrOfType<IntegerAttr>("tensor_memory_row_offset");
+  if (!colAttr || !rowAttr)
+    return std::nullopt;
+
+  TMemViewOffset base;
+  base.col = colAttr.getInt() + allocs[0].offset.col;
+  base.row = rowAttr.getInt() + allocs[0].offset.row;
+  return base;
+}
+
+// The set of physical (row, 32-bit column) cells each warp touches. Computed
+// from the same layout tcgen05 lowering uses, so detection cannot disagree
+// with codegen after layout transformations.
+using WarpFootprint = SmallVector<DenseSet<uint64_t>>;
+
+static LogicalResult computeWarpFootprint(RankedTensorType regTy,
+                                          ttg::MemDescType tmemTy,
+                                          TMemViewOffset base,
+                                          WarpFootprint &warpFp) {
+  MLIRContext *ctx = regTy.getContext();
+  auto physical = computeTMemLdStPhysicalLayout(regTy, tmemTy);
+  if (failed(physical))
+    return failure();
+  auto S = [ctx](StringRef s) { return StringAttr::get(ctx, s); };
+  StringAttr kWarp = S("warp"), kReg = S("register"), kLane = S("lane");
+  StringAttr kRow = S("row"), kCol = S("col");
+  if (!llvm::is_contained(physical->getInDimNames(), kWarp) ||
+      !llvm::is_contained(physical->getInDimNames(), kReg) ||
+      !llvm::is_contained(physical->getInDimNames(), kLane) ||
+      !llvm::is_contained(physical->getOutDimNames(), kRow) ||
+      !llvm::is_contained(physical->getOutDimNames(), kCol))
+    return failure();
+
+  int nWarp = physical->getInDimSize(kWarp);
+  int nReg = physical->getInDimSize(kReg);
+  int nLane = physical->getInDimSize(kLane);
+  int bitWidth = tmemTy.getElementTypeBitWidth();
+  warpFp.assign(nWarp, {});
+  SmallVector<std::pair<StringAttr, int32_t>> pt;
+  for (StringAttr d : physical->getInDimNames())
+    pt.push_back({d, 0});
+  for (int w = 0; w < nWarp; ++w) {
+    for (int r = 0; r < nReg; ++r) {
+      for (int l = 0; l < nLane; ++l) {
+        for (auto &p : pt)
+          p.second = (p.first == kReg)    ? r
+                     : (p.first == kLane) ? l
+                     : (p.first == kWarp) ? w
+                                          : 0;
+        int64_t row = 0, col = 0;
+        for (auto &o : physical->apply(pt)) {
+          if (o.first == kRow)
+            row = o.second;
+          else if (o.first == kCol)
+            col = o.second;
+        }
+        warpFp[w].insert(
+            (static_cast<uint64_t>(base.row + row) << 32) |
+            static_cast<uint64_t>(base.col + (col * bitWidth) / 32));
+      }
+    }
+  }
+  return success();
+}
+
+// True when a tmem_load and a following tmem_store cover exactly the same TMEM
+// region and no warp writes a cell a *different* warp read. Each warp then
+// only rewrites what it read itself, which program order plus the
+// tcgen05.wait::ld that tmem_load lowering emits already orders, so no CTA
+// barrier is needed.
+//
+// Deliberately narrow: it requires the same physical base and the same memory
+// descriptor, i.e. a read-modify-write of one region. Partially overlapping
+// regions keep the conservative interval-model answer, because the row
+// mapping for a shifted region is subtle enough that being wrong there would
+// drop a real barrier.
+static bool isSelfRewrite(TMEMLoadOp load, TMEMStoreOp store) {
+  auto readTy = load.getSrc().getType();
+  auto writeTy = store.getDst().getType();
+  if (readTy != writeTy)
+    return false;
+
+  std::optional<TMemViewOffset> readBase = getPhysicalBase(load.getSrc());
+  std::optional<TMemViewOffset> writeBase = getPhysicalBase(store.getDst());
+  if (!readBase || !writeBase)
+    return false;
+  if (readBase->row != writeBase->row || readBase->col != writeBase->col)
+    return false;
+
+  WarpFootprint readFp, writeFp;
+  if (failed(computeWarpFootprint(load.getResult().getType(), readTy, *readBase,
+                                  readFp)))
+    return false;
+  if (failed(computeWarpFootprint(store.getSrc().getType(), writeTy, *writeBase,
+                                  writeFp)))
+    return false;
+
+  for (size_t w = 0; w < writeFp.size(); ++w)
+    for (size_t r = 0; r < readFp.size(); ++r) {
+      if (w == r)
+        continue;
+      for (uint64_t cell : writeFp[w])
+        if (readFp[r].contains(cell))
+          return false;
+    }
+  return true;
+}
+
+static bool filterFn(Operation *lhs, Operation *rhs, bool /*lhsIsRead*/,
+                     bool /*rhsIsRead*/, Allocation * /*allocation*/) {
+  TMemAccessKind lhsKind = getTMemAccessKind(lhs);
+  TMemAccessKind rhsKind = getTMemAccessKind(rhs);
+
+  bool war =
+      lhsKind == TMemAccessKind::Load && rhsKind == TMemAccessKind::Store;
+  bool raw =
+      lhsKind == TMemAccessKind::Store && rhsKind == TMemAccessKind::Load;
+  bool waw =
+      lhsKind == TMemAccessKind::Store && rhsKind == TMemAccessKind::Store;
+
+  // MMAv5 ops and tmem_copy are special cases, we care about load->mma and
+  // store->mma dependencies but mma -> load/store doesn't require a barrier
+  // since it would need a mbarrier wait that will ensure the op is finished
+  // before any thread can reach the load/store.
+  bool loadToMma =
+      lhsKind == TMemAccessKind::Load && rhsKind == TMemAccessKind::MMA;
+  bool storeToMma =
+      lhsKind == TMemAccessKind::Store && rhsKind == TMemAccessKind::MMA;
+
+  bool requiresBarrier = war || raw || waw || loadToMma || storeToMma;
+
+  // The interval model is per-allocation-region: it cannot tell a warp
+  // rewriting the cells it just read from a genuine cross-warp hazard. For a
+  // load->store pair the per-warp physical footprints settle it exactly.
+  if (war)
+    if (auto load = dyn_cast<TMEMLoadOp>(lhs))
+      if (auto store = dyn_cast<TMEMStoreOp>(rhs))
+        if (isSelfRewrite(load, store))
+          return true;
+
+  return !requiresBarrier;
 }
 
 static void appendReadSlices(Value value, Operation *op, BlockInfo *blockInfo) {

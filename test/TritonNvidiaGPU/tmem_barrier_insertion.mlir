@@ -82,10 +82,13 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32} {
     tt.return
   }
 
+  // A read-modify-write of one region: every warp only rewrites the cells it
+  // just read, which program order plus tmem_load's tcgen05.wait::ld already
+  // orders, so no CTA barrier is needed.
   // CHECK-LABEL: @ld_then_st
   // CHECK: ttng.tmem_load
-  // CHECK-NEXT: ttg.barrier local
   // CHECK-NEXT: ttng.tmem_store
+  // CHECK-NOT: ttg.barrier
   tt.func @ld_then_st(%arg0: tensor<128x128xf32, #blocked>) {
     %true = arith.constant true
     %0 = ttng.tmem_alloc {tensor_memory_col_offset = 0 : i32, tensor_memory_row_offset = 0 : i32} : () -> !ttg.memdesc<128x128xf32, #tmem128, #ttng.tensor_memory, mutable>
@@ -350,12 +353,12 @@ module attributes {"ttg.num-ctas" = 1 : i32, "ttg.num-warps" = 4 : i32} {
     tt.return
   }
 
-  // Same allocation, same buffer index: the views do alias and the WAR still
-  // needs ordering.
+  // Same allocation and same buffer index: the views alias exactly, which makes
+  // this a read-modify-write of one region rather than a cross-warp hazard.
   // CHECK-LABEL: @ld_then_st_same_buffer
   // CHECK: ttng.tmem_load
-  // CHECK-NEXT: ttg.barrier local
   // CHECK-NEXT: ttng.tmem_store
+  // CHECK-NOT: ttg.barrier
   tt.func @ld_then_st_same_buffer(%arg0: tensor<128x128xf32, #blocked>) {
     %true = arith.constant true
     %c1 = arith.constant 1 : i32
